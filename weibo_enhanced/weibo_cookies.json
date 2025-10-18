@@ -1,0 +1,68 @@
+[
+    {
+        "name": "UOR",
+        "value": "www.explinks.com,open.weibo.com,www.explinks.com",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "SINAGLOBAL",
+        "value": "4890265148314.949.1760616647130",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "SCF",
+        "value": "Ag66U6NXNgzpvI1h1GSjWh8w7HR4yV1THrr4GQFUaPUrwab1lTisr2wNI0Tfk3S9wMpuu-gn3zEE7rBeq3dPH0k.",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "SUB",
+        "value": "_2A25F9mlkDeRhGeFK6lEY9inFyDuIHXVmiuSsrDV8PUNbmtANLWnFkW9NQ4Q2ECGsYmoj_q5jkQXclOxMddIRxTDq",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "SUBP",
+        "value": "0033WrSXqPxfM725Ws9jqgMF55529P9D9W5hxbQfEQ3wS54quS.PAC4d5JpX5KzhUgL.FoMXeKe4SoM4e0M2dJLoI7DGIg4aPfxWK.U9",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "ALF",
+        "value": "02_1763288628",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "XSRF-TOKEN",
+        "value": "LGsaDvyCidpV2_o8WuXFo8XR",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "_s_tentry",
+        "value": "passport.weibo.com",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "Apache",
+        "value": "5328543644592.494.1760696630058",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "ULV",
+        "value": "1760696630060:2:2:2:5328543644592.494.1760696630058:1760616647133",
+        "domain": ".weibo.com",
+        "path": "/"
+    },
+    {
+        "name": "WBPSESS",
+        "value": "5Z6s8UWJ0z4nYQUZnNpJfwLESuDOe3ofhb0UhnKscRUxflsu3MY7FgMWxQoBhITXhsl61YrhPnONN8VGA-XC9uddN_7WGsS5pjXgMSA9aqfE0gRwAQj-BbCJNww6YxwrSU1HLP2z57Cj39CAAaXapA==",
+        "domain": ".weibo.com",
+        "path": "/"
+    }
+]
