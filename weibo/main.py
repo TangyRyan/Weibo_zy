@@ -1,8 +1,10 @@
+# weibo/main.py
+
 import asyncio
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path  # 确保 Path 被导入
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -11,17 +13,24 @@ from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 import aiofiles
 
+# --- 修改点 1: 定义脚本所在的目录和项目根目录 ---
+# SCRIPT_DIR 会获取 main.py 文件所在的目录 (即 .../weibo/)
+SCRIPT_DIR = Path(__file__).parent
+# ROOT_DIR 会获取上级目录 (即 .../PyCharmMiscProject/)
+ROOT_DIR = SCRIPT_DIR.parent
+
 # --- 配置 ---
 TRENDING_URL = "https://m.weibo.cn/api/container/getIndex?containerid=106003type%3D25%26t%3D3%26disable_hot%3D1%26filter_type%3Drealtimehot"
 TRENDING_DETAIL_URL = "https://m.s.weibo.com/topic/detail?q=%s"
-README_PATH = Path("./README.md")
+# --- 修改点 2: 让 README.md 路径指向项目根目录 ---
+README_PATH = SCRIPT_DIR / "README.md"  # README.md 在 weibo 文件夹内
 MAX_RETRIES = 5
 
 # --- 日志配置 ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-# --- 数据类型 ---
+# --- 数据类型 (无需修改) ---
 class WeiboItem:
     def __init__(self, title: str, category: str, description: str, url: str, hot: int, ads: bool,
                  read_count: Optional[int] = None, discuss_count: Optional[int] = None, origin: Optional[int] = None):
@@ -49,7 +58,7 @@ class WeiboItem:
         }
 
 
-# --- 工具函数 ---
+# --- 工具函数 (无需修改) ---
 def create_list(words: List[WeiboItem]) -> str:
     last_update_time = datetime.now().strftime('%Y-%m-%d %I:%M %p')
     list_items = []
@@ -85,7 +94,6 @@ async def write_file(file_path: Path, content: str):
 
 async def read_file(path: Path) -> str:
     try:
-        # FIXED: Use aiofiles.open for async reading
         async with aiofiles.open(path, 'r', encoding='utf-8') as f:
             return await f.read()
     except FileNotFoundError:
@@ -109,8 +117,9 @@ def extract_numbers(s: Optional[str]) -> int:
     return int("".join(filter(str.isdigit, str(s))))
 
 
-# --- 核心爬虫逻辑 ---
+# --- 核心爬虫逻辑 (无需修改) ---
 async def fetch_trending_data_with_playwright() -> Optional[Dict[str, Any]]:
+    # ... (这部分代码无需修改)
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(
@@ -131,6 +140,7 @@ async def fetch_trending_data_with_playwright() -> Optional[Dict[str, Any]]:
 
 
 async def fetch_trending_detail(title: str) -> Dict[str, Any]:
+    # ... (这部分代码无需修改)
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(TRENDING_DETAIL_URL % quote(title))
@@ -160,11 +170,11 @@ async def fetch_trending_detail(title: str) -> Dict[str, Any]:
 async def save_hourly_json(words: List[WeiboItem]):
     date = datetime.now().strftime('%Y-%m-%d')
     hour = datetime.now().strftime('%H')
-    dir_path = Path(f"./api/{date}")
+    # --- 修改点 3: 使用 SCRIPT_DIR 作为基准路径 ---
+    dir_path = SCRIPT_DIR / "api" / date
     full_path = dir_path / f"{hour}.json"
     ensure_dir(dir_path)
 
-    # 按 hot 排序并去重
     unique_words = {word.title: word for word in words}.values()
     sorted_words = sorted(list(unique_words), key=lambda x: x.hot, reverse=True)
 
@@ -183,7 +193,8 @@ async def create_readme(words: List[WeiboItem]):
 
 async def save_day_json(words: List[WeiboItem]):
     date = datetime.now().strftime('%Y-%m-%d')
-    dir_path = Path(f"./api/{date}")
+    # --- 修改点 4: 使用 SCRIPT_DIR 作为基准路径 ---
+    dir_path = SCRIPT_DIR / "api" / date
     full_path = dir_path / "summary.json"
     ensure_dir(dir_path)
 
@@ -192,15 +203,11 @@ async def save_day_json(words: List[WeiboItem]):
     if content:
         words_already_downloaded = [WeiboItem(**item) for item in json.loads(content)]
 
-    # 更新或添加新词条
     word_map = {word.title: word for word in words_already_downloaded}
     for word in words:
         if word.title in word_map:
             old_word = word_map[word.title]
             old_word.hot = max(word.hot, old_word.hot)
-            old_word.read_count = max(word.read_count or 0, old_word.read_count or 0)
-            old_word.discuss_count = max(word.discuss_count or 0, old_word.discuss_count or 0)
-            old_word.origin = max(word.origin or 0, old_word.origin or 0)
         else:
             word_map[word.title] = word
 
@@ -208,13 +215,15 @@ async def save_day_json(words: List[WeiboItem]):
 
     await write_file(full_path, json.dumps([word.to_dict() for word in updated_words], ensure_ascii=False, indent=2))
 
-    # 创建每日归档
+    # --- 修改点 5: 使用 SCRIPT_DIR 作为基准路径 ---
+    archive_path = SCRIPT_DIR / "archives" / f"{date}.md"
     archive_data = create_archive(updated_words, date)
-    await write_file(Path(f"./archives/{date}.md"), archive_data)
+    await write_file(archive_path, archive_data)
     await create_readme(updated_words)
 
 
 async def bootstrap():
+    # ... (这部分代码无需修改)
     retry_count = 0
     while retry_count < MAX_RETRIES:
         try:
@@ -242,7 +251,7 @@ async def bootstrap():
 
                     words = await asyncio.gather(*tasks)
                     await asyncio.gather(save_hourly_json(words), save_day_json(words))
-                break  # 成功后退出循环
+                break
             else:
                 raise ValueError("API 返回数据格式不正确或 ok != 1")
         except Exception as e:
@@ -251,7 +260,7 @@ async def bootstrap():
             if retry_count >= MAX_RETRIES:
                 logging.error("达到最大重试次数，程序退出。")
                 break
-            await asyncio.sleep(5)  # 等待5秒后重试
+            await asyncio.sleep(5)
 
 
 if __name__ == "__main__":
