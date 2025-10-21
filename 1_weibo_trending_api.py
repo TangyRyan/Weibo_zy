@@ -11,7 +11,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # 初始化 Flask 应用
 app = Flask(__name__)
 
-# 数据文件所在的根目录，相对于 weibo_trending_api.py 的位置
+# 数据文件所在的根目录，相对于 1_weibo_trending_api.py 的位置
 API_DATA_PATH = Path("./weibo/api")
 
 
