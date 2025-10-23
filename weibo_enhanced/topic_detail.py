@@ -1,659 +1,397 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
-"""
-topic_detail.py - 最终版（支持新版 woo-picture，图片+视频共存、图片转 large 并补全 https）
-(v9.2: 修复图片 403 Forbidden，wx 替换为 ww，并扩展 /large/ 替换列表)
-"""
-
 import asyncio
 import json
 import logging
+import re
+from dataclasses import dataclass, asdict
 from typing import List, Optional
 from urllib.parse import quote, urljoin
 from pathlib import Path
-from datetime import datetime, timedelta
-import re
 
 from bs4 import BeautifulSoup
-from playwright.async_api import async_playwright, BrowserContext, TimeoutError
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
-# --- 配置 ---
+# -------------------- 常量配置 --------------------
 POSTS_SEARCH_URL = "https://s.weibo.com/weibo?q=%23{}%23&xsort=hot&suball=1&tw=hotweibo"
-MAX_POSTS_TO_FETCH = 20
-MAX_SEARCH_PAGES = 2  # number of result pages to fetch via ?page=
-SCROLL_COUNT = 2  # base scroll count per page
-SCROLL_DELAY_MS = 2000  # delay between scrolls in ms
-COOKIES_PATH = Path("./weibo_cookies.json")
-AUTH_STATE_PATH = Path("./auth_state.json")
-HEADLESS = True  # 可改为 False 便于调试
-LOGIN_HEADLESS = False  # 登录流程默认弹出浏览器窗口
-LOGIN_URL = ("https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&disp=popup"
-             "&url=https%3A%2F%2Fweibo.com%2Fnewlogin%3Ftabtype%3Dweibo%26gid%3D102803%26openLoginLayer%3D0"
-             "%26url%3Dhttps%253A%252F%252Fweibo.com%252F&from=weibopro")
+MAX_POSTS_TO_FETCH = 20          # 每个话题抓取的微博数量上限
+MAX_SEARCH_PAGES = 2             # 搜索列表最多翻页数
+SCROLL_COUNT = 2                 # 每页滚动次数，帮助加载更多
+SCROLL_DELAY_MS = 2000           # 每次滚动等待(ms)
+
+BASE_DIR = Path(__file__).parent
+USER_DATA_DIR = BASE_DIR / "browser_data_detail"  # 持久化上下文目录（保存登录态）
+COOKIES_PATH = BASE_DIR / "weibo_cookies.json"    # 兼容旧流程：可选地写出 cookies
+AUTH_STATE_PATH = BASE_DIR / "auth_state.json"    # Playwright storage_state 文件
+
+# “正常抓取”全程无UI；仅“登录流程”允许可见窗
+HEADLESS = True
+LOGIN_HEADLESS = False
+
+# 登录页与成功判断
+LOGIN_URL = (
+    "https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&disp=popup"
+    "&url=https%3A%2F%2Fweibo.com%2Fnewlogin%3Ftabtype%3Dweibo%26gid%3D102803%26openLoginLayer%3D0"
+    "%26url%3Dhttps%253A%252F%252Fweibo.com%252F"
+)
 LOGIN_SUCCESS_SELECTOR = "text=首页"
-LOGIN_TIMEOUT = 120000  # ms
+LOGIN_TIMEOUT = 120000  # 120s
 
+# -------------------- 数据结构 --------------------
+@dataclass
+class WeiboPost:
+    author: str
+    content: str
+    timestamp: str
+    source: str
+    forwards_count: int
+    comments_count: int
+    likes_count: int
+    image_links: List[str]
+    video_link: str
+    detail_url: str
 
-def _load_cookies_from_file() -> List[dict]:
-    if not COOKIES_PATH.exists():
-        return []
+    def to_dict(self):
+        d = asdict(self)
+        # 对外不暴露 detail_url（如你不希望前端看到，可保留；若需要可删除下面一行）
+        d.pop("detail_url", None)
+        return d
+
+# -------------------- 工具函数 --------------------
+def _cn_number_to_int(text: str) -> int:
+    """将“12万”“3.4亿”等中文计数转换为整数"""
+    if not text:
+        return 0
+    text = str(text).strip()
     try:
-        with open(COOKIES_PATH, 'r', encoding='utf-8') as f:
-            cookies = json.load(f)
-        if isinstance(cookies, list):
-            return cookies
-        logging.warning("Cookies 文件格式异常，期望为列表。")
-    except Exception as exc:
-        logging.warning(f"读取 Cookies 文件失败: {exc}")
-    return []
-
+        if "亿" in text:
+            return int(float(text.replace("亿", "")) * 100000000)
+        if "万" in text:
+            return int(float(text.replace("万", "")) * 10000)
+        # 去掉非数字
+        digits = re.sub(r"[^\d.]", "", text)
+        if digits == "":
+            return 0
+        return int(float(digits))
+    except Exception:
+        return 0
 
 def _persist_login_state(storage_state: dict) -> List[dict]:
-    cookies = storage_state.get("cookies", []) if isinstance(storage_state, dict) else []
+    """把 storage_state 和 cookies 写回到本地，便于兼容旧流程"""
     try:
-        AUTH_STATE_PATH.write_text(json.dumps(storage_state, ensure_ascii=False, indent=2), encoding='utf-8')
-    except Exception as exc:
-        logging.warning(f"写入 auth_state.json 失败: {exc}")
+        # 写 storage_state
+        AUTH_STATE_PATH.write_text(json.dumps(storage_state, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    cookies = storage_state.get("cookies", [])
     try:
-        COOKIES_PATH.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding='utf-8')
-        logging.info("已更新 weibo_cookies.json 文件。")
-    except Exception as exc:
-        logging.warning(f"写入 weibo_cookies.json 失败: {exc}")
+        COOKIES_PATH.write_text(json.dumps(cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
     return cookies
 
+def _load_cookies_from_file() -> Optional[List[dict]]:
+    """（可选）从 weibo_cookies.json 预置一份 Cookie 到上下文"""
+    if COOKIES_PATH.exists():
+        try:
+            data = json.loads(COOKIES_PATH.read_text(encoding="utf-8"))
+            # 兼容两种结构：纯 list 或 {"cookies": [...]}
+            if isinstance(data, dict) and "cookies" in data:
+                return data["cookies"]
+            if isinstance(data, list):
+                return data
+        except Exception:
+            return None
+    return None
 
+# -------------------- 登录流程（仅此时弹窗） --------------------
 async def _login_and_update_cookies(playwright) -> Optional[List[dict]]:
     """
-    触发手动登录流程，登录成功后更新本地 auth_state.json 和 weibo_cookies.json。
+    触发手动登录（允许弹窗）。成功后持久化到 USER_DATA_DIR，并写回 auth_state.json / weibo_cookies.json。
     """
-    browser = await playwright.chromium.launch(headless=LOGIN_HEADLESS)
-
-    context_kwargs = {}
-    if AUTH_STATE_PATH.exists():
-        context_kwargs["storage_state"] = str(AUTH_STATE_PATH)
-
-    context = await browser.new_context(**context_kwargs)
+    USER_DATA_DIR.mkdir(exist_ok=True)
+    context = await playwright.chromium.launch_persistent_context(
+        user_data_dir=str(USER_DATA_DIR),
+        headless=LOGIN_HEADLESS,  # ★ 登录时才允许有头
+        args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox"]
+    )
     page = await context.new_page()
 
-    # 优先尝试使用已保存的状态直接进入首页
-    if context_kwargs:
+    # 若已有 storage_state，先尝试直接进入首页（可避免无谓的登录步骤）
+    if AUTH_STATE_PATH.exists():
         try:
-            await page.goto("https://weibo.com", wait_until='load', timeout=60000)
+            await page.goto("https://weibo.com", wait_until="load", timeout=60000)
             await page.wait_for_selector(LOGIN_SUCCESS_SELECTOR, timeout=15000)
             logging.info("已通过保存的登录状态自动登录。")
             storage = await context.storage_state()
             cookies = _persist_login_state(storage)
             await context.close()
-            await browser.close()
             return cookies
         except Exception:
-            logging.info("保存的登录状态已失效，准备进行手动登录。")
-            await context.close()
-            context = await browser.new_context()
-            page = await context.new_page()
+            logging.info("保存的登录状态无效，进入手动登录。")
 
-
-    logging.info("请在打开的浏览器窗口中完成微博登录...")
-    await page.goto(LOGIN_URL, wait_until='load', timeout=60000)
+    logging.info("请在弹出的浏览器中完成微博登录…")
+    await page.goto(LOGIN_URL, wait_until="load", timeout=60000)
     try:
         await page.wait_for_selector(LOGIN_SUCCESS_SELECTOR, timeout=LOGIN_TIMEOUT)
-        logging.info("登录成功，正在更新本地 Cookie。")
-    except TimeoutError:
+        logging.info("登录成功，正在更新本地状态。")
+    except PlaywrightTimeout:
         logging.error("登录超时，未能更新 Cookie。")
         await context.close()
-        await browser.close()
         return None
 
     storage = await context.storage_state()
     cookies = _persist_login_state(storage)
-
     await context.close()
-    await browser.close()
     return cookies
 
-# --- 日志 ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
-class WeiboPost:
-    def __init__(self, author: str, content: str, timestamp: str, source: str,
-                 forwards_count: int, comments_count: int, likes_count: int,
-                 image_links: List[str], video_link: str):
-        self.author = author
-        self.content = content
-        self.timestamp = timestamp
-        self.source = source
-        self.forwards_count = forwards_count
-        self.comments_count = comments_count
-        self.likes_count = likes_count
-        self.image_links = image_links
-        self.video_link = video_link
-
-    def to_dict(self):
-        # A 顺序
-        return {
-            "author": self.author,
-            "content": self.content,
-            "timestamp": self.timestamp,
-            "source": self.source,
-            "forwards_count": self.forwards_count,
-            "comments_count": self.comments_count,
-            "likes_count": self.likes_count,
-            "image_links": self.image_links,
-            "video_link": self.video_link,
-        }
-
-    def __repr__(self):
-        return f"WeiboPost(author='{self.author}', images={len(self.image_links)}, video={'Yes' if self.video_link else 'No'})"
-
-
-# ---------------- 辅助函数 ----------------
-def _convert_to_number(val_str: Optional[str]) -> int:
-    try:
-        if not val_str:
-            return 0
-        s = val_str.strip()
-        s = re.sub(r'[^\d\.万亿,]', '', s)
-        if not s:
-            return 0
-        if '亿' in s:
-            return int(float(s.replace('亿', '')) * 100000000)
-        if '万' in s:
-            return int(float(s.replace('万', '')) * 10000)
-        s = s.replace(',', '')
-        return int(float(s))
-    except Exception:
-        return 0
-
-
-def _pad_time_part(time_part: str) -> str:
-    """把各种时间片段补成 02 位格式 'HH:MM'"""
-    try:
-        parts = time_part.strip().split(':')
-        if len(parts) != 2:
-            return "00:00"
-        h = int(parts[0])
-        m = int(parts[1])
-        return f"{h:02d}:{m:02d}"
-    except Exception:
-        return "00:00"
-
-
-def normalize_time(raw: str) -> str:
+# -------------------- 详情页抓取 --------------------
+async def _get_post_details(context, detail_url: str, base_data: dict) -> Optional[WeiboPost]:
     """
-    统一返回 YYYY-MM-DD HH:mm（T1）
-    支持：刚刚 / x分钟前 / x小时前 / 今天 HH:mm / 昨天 HH:mm / M月D日 HH:mm / YYYY-MM-DD HH:mm
-    """
-    if not raw:
-        return ""
-
-    raw = raw.strip()
-    raw = raw.replace("发布于", "").strip()
-    now = datetime.now()
-
-    if raw == "刚刚":
-        return now.strftime("%Y-%m-%d %H:%M")
-
-    m = re.match(r'^\s*(\d+)\s*分钟前', raw)
-    if m:
-        mins = int(m.group(1))
-        dt = now - timedelta(minutes=mins)
-        return dt.strftime("%Y-%m-%d %H:%M")
-
-    m = re.match(r'^\s*(\d+)\s*小时前', raw)
-    if m:
-        hrs = int(m.group(1))
-        dt = now - timedelta(hours=hrs)
-        return dt.strftime("%Y-%m-%d %H:%M")
-
-    m = re.match(r'^(?:今天)\s*(\d{1,2}:\d{1,2})$', raw)
-    if m:
-        tp = _pad_time_part(m.group(1))
-        return now.strftime(f"%Y-%m-%d {tp}")
-
-    m = re.match(r'^(?:昨天)\s*(\d{1,2}:\d{1,2})$', raw)
-    if m:
-        tp = _pad_time_part(m.group(1))
-        dt = now - timedelta(days=1)
-        return dt.strftime(f"%Y-%m-%d {tp}")
-
-    m = re.match(r'^\s*(\d{1,2})月(\d{1,2})日(?:\s*(\d{1,2}:\d{1,2}))?\s*$', raw)
-    if m:
-        month = int(m.group(1))
-        day = int(m.group(2))
-        time_part = m.group(3) or "00:00"
-        time_part = _pad_time_part(time_part)
-        year = now.year
-        try:
-            dt = datetime.strptime(f"{year}-{month:02d}-{day:02d} {time_part}", "%Y-%m-%d %H:%M")
-            return dt.strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return raw
-
-    m = re.match(r'^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:\s+(\d{1,2}:\d{1,2}))?\s*$', raw)
-    if m:
-        year = int(m.group(1))
-        month = int(m.group(2))
-        day = int(m.group(3))
-        time_part = m.group(4) or "00:00"
-        time_part = _pad_time_part(time_part)
-        try:
-            dt = datetime.strptime(f"{year}-{month:02d}-{day:02d} {time_part}", "%Y-%m-%d %H:%M")
-            return dt.strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return raw
-
-    # 兜底：查找 M月D日 HH:mm
-    m = re.search(r'(\d{1,2})月(\d{1,2})日.*?(\d{1,2}:\d{1,2})', raw)
-    if m:
-        month = int(m.group(1))
-        day = int(m.group(2))
-        tp = _pad_time_part(m.group(3))
-        year = now.year
-        try:
-            dt = datetime.strptime(f"{year}-{month:02d}-{day:02d} {tp}", "%Y-%m-%d %H:%M")
-            return dt.strftime("%Y-%m-%d %H:%M")
-        except Exception:
-            return raw
-
-    return raw
-
-
-def _is_text_node_likely_time(node) -> bool:
-    """
-    判断文本节点是否在可能含时间/元信息的区域（避免正文误判）
-    """
-    try:
-        el = node.parent
-        depth = 0
-        while el is not None and depth < 6:
-            tag = getattr(el, 'name', '')
-            classes = " ".join(el.get('class') or []) if hasattr(el, 'get') else ''
-            id_attr = el.get('id') if hasattr(el, 'get') else ''
-            combined = f"{tag} {classes} {id_attr}".lower()
-            if tag and tag.lower() in ('time',):
-                return True
-            if any(k in combined for k in
-                   ('from', 'wb_from', 'time', 'publish', 'publish_time', 'date', 'meta', 'info')):
-                return True
-            el = el.parent
-            depth += 1
-    except Exception:
-        pass
-    return False
-
-
-# ---------------- 详情页抓取 ----------------
-async def get_post_details(context: BrowserContext, detail_url: str, post_data: dict) -> WeiboPost:
-    """
-    访问详情页，补充 timestamp/source/image_links/video_link 等
-    detail_url 也作为 video_link 返回（V1）
+    进入单条微博详情页，补充图片/视频等信息。失败返回 None。
     """
     page = await context.new_page()
     try:
-        logging.info(f"正在访问详情页: {detail_url}")
-        await page.goto(detail_url, wait_until='load', timeout=30000)
-
-        # 尝试等待常见节点
+        await page.goto(detail_url, wait_until="load", timeout=60000)
+        # 等待正文区域出现（尽量宽松一些）
         try:
-            await page.wait_for_selector('div.from, .WB_from, .woo-picture-slot, .picture', timeout=8000)
-        except Exception:
-            logging.debug("详情页未找到常用选择器，继续解析页面内容。")
-
-        html_content = await page.content()
-        soup = BeautifulSoup(html_content, 'html.parser')
-
-        # ---- 时间与来源 ----
-        timestamp_final = ""
-        source_final = ""
-        from_node = soup.select_one('div.from') or soup.select_one('.WB_from') or soup.select_one('.info .from')
-        if from_node:
-            a_tags = from_node.select('a')
-            if a_tags:
-                raw_time = a_tags[0].get_text(strip=True)
-                timestamp_final = normalize_time(raw_time)
-                if len(a_tags) > 1:
-                    source_final = a_tags[1].get_text(strip=True)
-                else:
-                    t = from_node.get_text(separator=' ', strip=True)
-                    t = t.replace(raw_time, '').strip()
-                    if t:
-                        source_final = t
-
-        # meta / time 标签补充
-        if not timestamp_final or re.search(r'[今昨天分钟前小时]', timestamp_final):
-            meta_time = soup.find('meta', {'name': 'weibo:publish_time'})
-            if meta_time and meta_time.get('content'):
-                timestamp_final = normalize_time(meta_time.get('content'))
-
-        if not timestamp_final:
-            time_tag = soup.find('time')
-            if time_tag and time_tag.get('datetime'):
-                timestamp_final = normalize_time(time_tag.get('datetime'))
-            elif time_tag:
-                ts_txt = time_tag.get_text(strip=True)
-                if ts_txt:
-                    timestamp_final = normalize_time(ts_txt)
-
-        # 兜底从靠近元信息的短文本节点找时间，避免正文误判
-        if not timestamp_final:
-            candidate = ""
-            text_nodes = soup.find_all(string=True)
-            for t in text_nodes:
-                if not isinstance(t, str):
-                    continue
-                txt = t.strip()
-                if not txt or len(txt) > 60:
-                    continue
-                if re.search(r'\d{4}[-/]\d{1,2}[-/]\d{1,2}', txt) or re.search(r'\d{1,2}月\d{1,2}日', txt):
-                    if _is_text_node_likely_time(t):
-                        candidate = txt
-                        break
-            if candidate:
-                timestamp_final = normalize_time(candidate)
-
-        # 最后兜底使用列表页时间
-        if not timestamp_final:
-            list_time = post_data.get('timestamp', '') or ""
-            timestamp_final = normalize_time(list_time) if list_time else ""
-
-        post_data['timestamp'] = timestamp_final or ""
-        post_data['source'] = source_final or ""
-
-        # ---- 图片抓取（始终执行，不与视频互斥） ----
-        image_links: List[str] = []
-        # 选择器集合：覆盖新版 woo-picture、picture、旧版 media-piclist、WB_media_a 等
-        pic_selectors = [
-            'div.woo-picture-slot img',
-            'div.woo-picture-main img',
-            'div.picture img',
-            'div.picture-box_row_3DIwo img',
-            'div.picture_inlineNum3_3P7K1 img',
-            'div.media-piclist ul li img',
-            'div.WB_media_a img',
-            'img[node-type="feed_list_media_img"]',
-            'img[action-type="feed_list_media_img"]',
-            'div.pic_box img',
-            'div.photo_list img',
-        ]
-
-        found_nodes = []
-        for sel in pic_selectors:
-            nodes = soup.select(sel)
-            if nodes:
-                # extend while preserving order; avoid duplicates
-                for n in nodes:
-                    if n not in found_nodes:
-                        found_nodes.append(n)
-
-        for img in found_nodes:
-            src = img.get('src') or img.get('data-src') or img.get('data-original') or img.get('data-url')
-            if not src:
-                continue
-
-            # --- 【!!! 核心修改点 (v9.2)：扩展替换列表 !!!】 ---
-            # 1. 转为 large 高质量（P1）
-            large_src = src.replace('/orj360/', '/large/').replace('/orj180/', '/large/') \
-                .replace('/thumb150/', '/large/').replace('/square/', '/large/') \
-                .replace('/bmiddle/', '/large/').replace('/wap360/', '/large/') \
-                .replace('/orj480/', '/large/').replace('/mw690/', '/large/') \
-                .replace('/mw1024/', '/large/').replace('/mw2000/', '/large/')  # <-- 新增
-
-            # 2. 补全协议
-            if large_src.startswith('//'):
-                large_src = 'https:' + large_src
-
-            # 3. 将 wx (微信) 域名替换为 ww (微博) 域名 (解决 403 Forbidden)
-            large_src = large_src.replace('://wx1.sinaimg.cn/', '://ww1.sinaimg.cn/') \
-                .replace('://wx2.sinaimg.cn/', '://ww2.sinaimg.cn/') \
-                .replace('://wx3.sinaimg.cn/', '://ww3.sinaimg.cn/') \
-                .replace('://wx4.sinaimg.cn/', '://ww4.sinaimg.cn/')
-
-            # 4. 补全相对路径
-            if large_src.startswith('/'):
-                large_src = urljoin('https://weibo.com', large_src)
-
-            if large_src not in image_links:
-                image_links.append(large_src)
-
-        post_data['image_links'] = image_links
-
-        # ---- video_link (V1：原帖 detail_url)，优先查找 /tv/show/ 播放页 ----
-        video_page_link = detail_url
-        try:
-            for a in soup.find_all('a', href=True):
-                href = a.get('href')
-                if href and '/tv/show/' in href:
-                    video_page_link = href if href.startswith('http') else urljoin('https://weibo.com', href)
-                    break
-        except Exception:
+            await page.wait_for_selector("article, div.Detail, div.WB_detail", timeout=10000)
+        except PlaywrightTimeout:
             pass
 
-        post_data['video_link'] = video_page_link or ""
+        html = await page.content()
+        soup = BeautifulSoup(html, "html.parser")
 
-        # ---- content 清理：若有视频则删除 'Lxxx的微博视频'（B） ----
-        content = post_data.get('content', '') or ""
-        if post_data['video_link']:
-            content = re.sub(r'L[^\s\u200b]*的微博视频', '', content)
-            content = re.sub(r'\s{2,}', ' ', content).strip()
-            post_data['content'] = content
+        # 图片
+        image_links = []
+        for img in soup.select("img"):
+            src = img.get("src") or img.get("data-src") or ""
+            if src and ("wx" in src or "sinaimg" in src or "mw" in src):
+                if src.startswith("//"):
+                    src = "https:" + src
+                image_links.append(src)
+        # 去重
+        image_links = list(dict.fromkeys(image_links))
 
-        # 返回 WeiboPost 对象
+        # 视频（非常粗略的抓取方式，足够用）
+        video_link = ""
+        video_tag = soup.find("video")
+        if video_tag and video_tag.get("src"):
+            video_link = video_tag.get("src")
+            if video_link.startswith("//"):
+                video_link = "https:" + video_link
+
         return WeiboPost(
-            author=post_data.get('author', '') or '',
-            content=post_data.get('content', '') or '',
-            timestamp=post_data.get('timestamp', '') or '',
-            source=post_data.get('source', '') or '',
-            forwards_count=int(post_data.get('forwards_count', 0) or 0),
-            comments_count=int(post_data.get('comments_count', 0) or 0),
-            likes_count=int(post_data.get('likes_count', 0) or 0),
-            image_links=post_data.get('image_links', []) or [],
-            video_link=post_data.get('video_link', '') or ""
+            author=base_data.get("author", ""),
+            content=base_data.get("content", ""),
+            timestamp=base_data.get("timestamp", ""),
+            source=base_data.get("source", ""),
+            forwards_count=base_data.get("forwards_count", 0),
+            comments_count=base_data.get("comments_count", 0),
+            likes_count=base_data.get("likes_count", 0),
+            image_links=image_links,
+            video_link=video_link,
+            detail_url=detail_url
         )
-
     except Exception as e:
-        logging.warning(f"访问详情页 {detail_url} 失败: {e}，将返回列表页已有数据（尽量完善）。")
-        # 失败时返回列表页数据，normalize timestamp，并按 B 清理 content（若 detail_url 存在）
-        list_time = post_data.get('timestamp', '') or ""
-        content = post_data.get('content', '') or ""
-        if detail_url:
-            content = re.sub(r'L[^\s\u200b]*的微博视频', '', content)
-            content = re.sub(r'\s{2,}', ' ', content).strip()
-        return WeiboPost(
-            author=post_data.get('author', '') or '',
-            content=content,
-            timestamp=normalize_time(list_time) if list_time else "",
-            source=post_data.get('source', '') or '',
-            forwards_count=int(post_data.get('forwards_count', 0) or 0),
-            comments_count=int(post_data.get('comments_count', 0) or 0),
-            likes_count=int(post_data.get('likes_count', 0) or 0),
-            image_links=post_data.get('image_links', []) or [],
-            video_link=detail_url or ""
-        )
+        logging.warning(f"详情页抓取失败：{detail_url}，原因：{e}")
+        return None
     finally:
         try:
             await page.close()
         except Exception:
             pass
 
-
-# ---------------- 主流程 ----------------
+# -------------------- 列表页抓取（默认静默） --------------------
 async def get_top_20_hot_posts(topic_title: str) -> List[WeiboPost]:
-    url = POSTS_SEARCH_URL.format(quote(topic_title.replace("#", "")))
+    """
+    抓取一个话题的热门微博（最多 20 条）。
+    常态：全程 headless 静默，不弹窗。
+    仅当检测到登录态失效时，临时弹窗一次完成登录，然后回到静默抓取。
+    """
+    search_url = POSTS_SEARCH_URL.format(quote(topic_title.replace("#", "")))
     logging.info(f"开始抓取话题 '{topic_title}' 的热门微博...")
 
-    cookies_for_context = _load_cookies_from_file()
+    seed_cookies = _load_cookies_from_file()  # 仅用于冷启动时的种子 Cookie
 
     async with async_playwright() as p:
-        browser = None
-        context = None
-        page = None
-
         attempt = 0
-        while attempt < 2:
-            attempt += 1
-            browser_context_args = {
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36'
-            }
-            if cookies_for_context:
-                browser_context_args['storage_state'] = {"cookies": cookies_for_context}
-                logging.info("已加载本地 Cookies，准备发起请求。")
-            else:
-                logging.info("未找到可用 Cookies，将以未登录状态尝试访问。")
+        posts: List[WeiboPost] = []
 
-            browser = await p.chromium.launch(headless=HEADLESS)
-            context = await browser.new_context(**browser_context_args)
+        while attempt < 2:  # 最多两轮：第一轮失败 -> 执行登录 -> 再试一轮
+            attempt += 1
+
+            USER_DATA_DIR.mkdir(exist_ok=True)
+            context = await p.chromium.launch_persistent_context(
+                user_data_dir=str(USER_DATA_DIR),
+                headless=HEADLESS,  # ★ 常态：静默
+                args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox", "--window-position=-32000,-32000"]
+            )
+
+            # 冷启动可补种 cookie（不会覆盖 storage_state 里已有cookie）
+            try:
+                if seed_cookies:
+                    await context.add_cookies(seed_cookies)
+            except Exception:
+                pass
+
             page = await context.new_page()
 
             try:
-                await page.goto(url, wait_until='load', timeout=60000)
-                await page.wait_for_selector('div.card-wrap', timeout=10000)
-                break  # 成功加载
+                await page.goto(search_url, wait_until="load", timeout=60000)
+                await page.wait_for_selector("div.card-wrap", timeout=10000)
+                # 如果能到这里，说明无需登录，直接解析列表
             except Exception:
-                await browser.close()
-                browser = None
-                context = None
-                page = None
+                await context.close()
 
                 if attempt >= 2:
                     logging.warning("连续两次访问失败，可能仍需登录。")
                     return []
 
-                logging.info("疑似 Cookies 失效，开始调用登录流程刷新 Cookie。")
-                cookies_for_context = await _login_and_update_cookies(p)
-                if not cookies_for_context:
-                    logging.error("登录失败，无法继续抓取。")
+                # ★ 仅此时触发登录流程（会弹窗），成功后进入下一轮静默抓取
+                logging.info("疑似 Cookies/登录状态失效，开始登录刷新（将弹出浏览器窗口）...")
+                seed_cookies = await _login_and_update_cookies(p)
+                if not seed_cookies:
+                    logging.error("登录失败，放弃本话题抓取。")
                     return []
-                logging.info("登录成功，已刷新 Cookie，准备重新尝试访问。")
+                logging.info("登录成功，已刷新状态，准备重新尝试访问。")
                 continue
 
-        try:
-            base_search_url = url
-            page_urls = [base_search_url] + [
-                f"{base_search_url}&page={page_idx}"
-                for page_idx in range(2, MAX_SEARCH_PAGES + 1)
-            ]
+            # ------- 解析列表页（含滚动 & 翻页） -------
+            try:
+                base_search_url = search_url
+                page_urls = [base_search_url] + [
+                    f"{base_search_url}&page={i}" for i in range(2, MAX_SEARCH_PAGES + 1)
+                ]
 
-            initial_posts_data: List[dict] = []
-            seen_detail_urls = set()
+                initial_posts: List[dict] = []
+                seen_detail_urls = set()
 
-            async def collect_list_page(page_obj, page_index: int) -> bool:
-                if SCROLL_COUNT > 0:
-                    for _ in range(SCROLL_COUNT):
-                        await page_obj.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        await page_obj.wait_for_timeout(SCROLL_DELAY_MS)
+                async def collect_from_page(page_obj, page_index: int) -> bool:
+                    # 滚动加载更多
+                    if SCROLL_COUNT > 0:
+                        for _ in range(SCROLL_COUNT):
+                            await page_obj.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                            await page_obj.wait_for_timeout(SCROLL_DELAY_MS)
+                    html = await page_obj.content()
+                    soup = BeautifulSoup(html, "html.parser")
+                    cards = soup.select("div.card-wrap")
+                    logging.info(f"Search page {page_index} returned {len(cards)} cards.")
 
-                html_content_local = await page_obj.content()
-                soup_local = BeautifulSoup(html_content_local, 'html.parser')
-                post_cards_local = soup_local.select('div.card-wrap')
-                logging.info(f"Search page {page_index} returned {len(post_cards_local)} cards.")
+                    for card in cards:
+                        try:
+                            # 文本
+                            txt = card.select_one("p.txt")
+                            if not txt:
+                                continue
+                            content = txt.get_text(strip=True) or ""
 
-                for card in post_cards_local:
+                            # 作者
+                            name_node = card.select_one(".content .info .name")
+                            author = name_node.get_text(strip=True) if name_node else ""
+
+                            # 时间 与 详情链接
+                            detail_url, timestamp = "", ""
+                            from_node = card.select_one(".content .from")
+                            if from_node:
+                                a = from_node.select_one("a")
+                                if a:
+                                    href = a.get("href", "")
+                                    if href.startswith("//"):
+                                        detail_url = "https:" + href
+                                    elif href.startswith("http"):
+                                        detail_url = href
+                                    else:
+                                        detail_url = urljoin("https://weibo.com", href)
+                                    timestamp = a.get_text(strip=True)
+
+                            if not detail_url or detail_url in seen_detail_urls:
+                                continue
+
+                            # 转评赞
+                            actions = card.select(".card-act ul li a")
+                            forwards = _cn_number_to_int(actions[0].get_text(strip=True)) if len(actions) > 0 else 0
+                            comments = _cn_number_to_int(actions[1].get_text(strip=True)) if len(actions) > 1 else 0
+                            likes = _cn_number_to_int(actions[2].get_text(strip=True)) if len(actions) > 2 else 0
+
+                            seen_detail_urls.add(detail_url)
+                            initial_posts.append({
+                                "author": author,
+                                "content": content,
+                                "timestamp": timestamp,
+                                "source": "",
+                                "forwards_count": forwards,
+                                "comments_count": comments,
+                                "likes_count": likes,
+                                "image_links": [],
+                                "video_link": "",
+                                "detail_url": detail_url
+                            })
+
+                            if len(initial_posts) >= MAX_POSTS_TO_FETCH:
+                                return True
+                        except Exception:
+                            continue
+                    return False
+
+                # 第1页
+                await collect_from_page(page, 1)
+
+                # 后续页
+                page_idx = 2
+                while len(initial_posts) < MAX_POSTS_TO_FETCH and page_idx <= MAX_SEARCH_PAGES:
+                    page_url = page_urls[page_idx - 1]
+                    logging.info(f"Fetching additional search page {page_idx}: {page_url}")
+                    extra = await context.new_page()
+                    page_completed = False
                     try:
-                        if not card.select_one('p.txt'):
-                            continue
-
-                        author = card.select_one('.content .info .name').get_text(strip=True) if card.select_one(
-                            '.content .info .name') else ''
-                        content = card.select_one('p.txt').get_text(strip=True) or ''
-
-                        detail_url = ""
-                        timestamp = ""
-                        from_node = card.select_one('.content .from')
-                        if from_node:
-                            timestamp_tag = from_node.select_one('a')
-                            if timestamp_tag:
-                                href = timestamp_tag.get('href', '')
-                                if href.startswith('//'):
-                                    detail_url = 'https:' + href
-                                elif href.startswith('http'):
-                                    detail_url = href
-                                else:
-                                    detail_url = urljoin('https://weibo.com', href)
-                                timestamp = timestamp_tag.get_text(strip=True)
-
-                        if not detail_url or detail_url in seen_detail_urls:
-                            continue
-
-                        actions = card.select('.card-act ul li a')
-                        forwards = _convert_to_number(actions[0].get_text(strip=True)) if len(actions) > 0 else 0
-                        comments = _convert_to_number(actions[1].get_text(strip=True)) if len(actions) > 1 else 0
-                        likes = _convert_to_number(actions[2].get_text(strip=True)) if len(actions) > 2 else 0
-
-                        seen_detail_urls.add(detail_url)
-                        initial_posts_data.append({
-                            "author": author,
-                            "content": content,
-                            "timestamp": timestamp,
-                            "source": "",
-                            "forwards_count": forwards,
-                            "comments_count": comments,
-                            "likes_count": likes,
-                            "image_links": [],
-                            "video_link": "",
-                            "detail_url": detail_url
-                        })
-
-                        if len(initial_posts_data) >= MAX_POSTS_TO_FETCH:
-                            return True
-                    except Exception:
-                        continue
-                return False
-
-            # process first search page (already loaded)
-            await collect_list_page(page, 1)
-
-            # fetch additional pages if needed
-            next_page_index = 2
-            while len(initial_posts_data) < MAX_POSTS_TO_FETCH and next_page_index <= MAX_SEARCH_PAGES:
-                page_url = page_urls[next_page_index - 1]
-                logging.info(f"Fetching additional search page {next_page_index}: {page_url}")
-                extra_page = await context.new_page()
-                page_completed = False
-                try:
-                    await extra_page.goto(page_url, wait_until='load', timeout=60000)
-                    await extra_page.wait_for_selector('div.card-wrap', timeout=10000)
-                    page_completed = await collect_list_page(extra_page, next_page_index)
+                        await extra.goto(page_url, wait_until="load", timeout=60000)
+                        await extra.wait_for_selector("div.card-wrap", timeout=10000)
+                        page_completed = await collect_from_page(extra, page_idx)
+                    except Exception as exc:
+                        logging.warning(f"Failed to load search page {page_idx}: {exc}")
+                    finally:
+                        try:
+                            await extra.close()
+                        except Exception:
+                            pass
                     if page_completed:
-                        logging.info("Reached target post count from search pages.")
-                except Exception as exc:
-                    logging.warning(f"Failed to load search page {next_page_index}: {exc}")
-                finally:
-                    try:
-                        await extra_page.close()
-                    except Exception:
-                        pass
-                if page_completed:
-                    break
-                next_page_index += 1
+                        break
+                    page_idx += 1
 
-            try:
-                await page.close()
+                # 关闭搜索页
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+                logging.info(f"列表页抓取完成：共 {len(initial_posts)} 条，开始抓取详情页...")
+
+                # 详情页并发抓取（适度并发，避免过快）
+                sem = asyncio.Semaphore(4)
+
+                async def wrap_detail(d):
+                    async with sem:
+                        return await _get_post_details(context, d.pop("detail_url"), d)
+
+                tasks = [wrap_detail(d) for d in initial_posts]
+                results = await asyncio.gather(*tasks)
+                posts = [r for r in results if r is not None]
+
             except Exception:
-                pass
+                logging.error(f"抓取话题 '{topic_title}' 时发生错误", exc_info=True)
+                posts = []
+            finally:
+                try:
+                    await context.close()
+                except Exception:
+                    pass
 
-            logging.info(f"列表页抓取完成：共 {len(initial_posts_data)} 条，开始抓取详情页...")
-            tasks = []
-            for post_data in initial_posts_data:
-                detail = post_data.pop("detail_url")
-                tasks.append(get_post_details(context, detail, post_data))
-
-            posts = await asyncio.gather(*tasks)
-            posts = [p for p in posts if p is not None]
-
-        except Exception as e:
-            logging.error(f"抓取话题 '{topic_title}' 时发生错误", exc_info=True)
-            posts = []
-        finally:
-            try:
-                if browser:
-                    await browser.close()
-            except Exception:
-                pass
+            break  # 第一轮成功就跳出 while
 
     logging.info(f"成功抓取到 {len(posts)} 条关于 '{topic_title}' 的微博详情")
     return posts
+
 
 
 # ---------------- 入口 / 测试 ----------------
