@@ -1,0 +1,182 @@
+[
+  {
+    "name": "X-CSRF-TOKEN",
+    "value": "CK-YcogYC_C9c74iJVlPC20MCVc2CXcoEMxvDWyzN7uZga4ocR0=",
+    "domain": ".passport.weibo.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "SCF",
+    "value": "AvrV4efkSM6svNuHtY1z7qsoVeseXV1B7Pnx8AuJWS_6-0meWxiP5cqmVFvpyardp8Xw5HAGZh1tQDKmg9n6dqk.",
+    "domain": ".weibo.com",
+    "path": "/",
+    "expires": 1795698503.368099,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SUB",
+    "value": "_2A25F_KcZDeRhGeFK6lEY9inFyDuIHXVnc6bRrDV8PUNbmtANLVbbkW9NQ4Q2EIeITbSzDelXVDeWIbm6FBSpHLOM",
+    "domain": ".weibo.com",
+    "path": "/",
+    "expires": 1792674503.368194,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SUBP",
+    "value": "0033WrSXqPxfM725Ws9jqgMF55529P9D9W5hxbQfEQ3wS54quS.PAC4d5JpX5KzhUgL.FoMXeKe4SoM4e0M2dJLoI7DGIg4aPfxWK.U9",
+    "domain": ".weibo.com",
+    "path": "/",
+    "expires": 1792674503.368219,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "ALC",
+    "value": "ALC-85KfK1-1761138505-1-1237756863-eb3a7f3cad613374443783d9c8ae-2",
+    "domain": ".passport.weibo.com",
+    "path": "/",
+    "expires": 1763730503.368243,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "ALF",
+    "value": "02_1763730505",
+    "domain": ".weibo.com",
+    "path": "/",
+    "expires": 1763730503.368268,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ALF",
+    "value": "02_1763730505",
+    "domain": ".sina.com.cn",
+    "path": "/",
+    "expires": 1763730503.461582,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "ALC",
+    "value": "ALC-85KfK1-1761138505-1-1565424895-03d0bb355679dc84abb3018ded93-2",
+    "domain": ".login.sina.com.cn",
+    "path": "/",
+    "expires": 1763730503.461551,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SCF",
+    "value": "AvrV4efkSM6svNuHtY1z7qsoVeseXV1B7Pnx8AuJWS_6-0meWxiP5cqmVFvpyardp8TE0EDDTyUW5_-PjjwdWxM.",
+    "domain": ".sina.com.cn",
+    "path": "/",
+    "expires": 1795698503.461623,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SUB",
+    "value": "_2A25F_KcZDeRhGeFK6lEY9inFyDuIHXVnc6bRrDV_PUJbkNANLXehkW9NQ4Q2EGiV9cDHtTQc0SZssYiIDcpAWOL4",
+    "domain": ".sina.com.cn",
+    "path": "/",
+    "expires": 1792674503.461647,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SUBP",
+    "value": "0033WrSXqPxfM725Ws9jqgMF55529P9D9W5hxbQfEQ3wS54quS.PAC4d5NHD95QNSh201KqN1KeNWs4DqcjZxcLVdfv-B-4GgBtt",
+    "domain": ".sina.com.cn",
+    "path": "/",
+    "expires": 1761743303.46167,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SCF",
+    "value": "AvrV4efkSM6svNuHtY1z7qsoVeseXV1B7Pnx8AuJWS_6-0meWxiP5cqmVFvpyardp090hU-EqVOp4nMvpnvHSCM.",
+    "domain": ".weibo.cn",
+    "path": "/",
+    "expires": 1795698503.62387,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SUB",
+    "value": "_2A25F_KcZDeRhGeFK6lEY9inFyDuIHXVnc6bRrDV6PUJbktCOLVnjkW1NQ4Q2EERRRuUi3NCBnbZWv0RS-re2t6xU",
+    "domain": ".weibo.cn",
+    "path": "/",
+    "expires": 1792674503.623945,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SUBP",
+    "value": "0033WrSXqPxfM725Ws9jqgMF55529P9D9W5hxbQfEQ3wS54quS.PAC4d5NHD95QNSh201KqN1KeNWs4DqcjZxcLVdfv-B-4GgBtt",
+    "domain": ".weibo.cn",
+    "path": "/",
+    "expires": 1792674503.62397,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "SSOLoginState",
+    "value": "1761138505",
+    "domain": ".weibo.cn",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "ALF",
+    "value": "1763730505",
+    "domain": ".weibo.cn",
+    "path": "/",
+    "expires": 1763730503.624037,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "None"
+  },
+  {
+    "name": "XSRF-TOKEN",
+    "value": "wGTqVQv-iU470kplQgZpoBb1",
+    "domain": "weibo.com",
+    "path": "/",
+    "expires": -1,
+    "httpOnly": false,
+    "secure": true,
+    "sameSite": "Lax"
+  },
+  {
+    "name": "WBPSESS",
+    "value": "5Z6s8UWJ0z4nYQUZnNpJfwLESuDOe3ofhb0UhnKscRUPFrcjS57cxU9y7mjqEps-0MM3zztLZi6H5lO-td2FdGTXLyy_bA0xI7cRdU9G2LS4Vt9z3Ponm_fk1KieJjZwTx-N8aFemPpLYBj2yE54UQ==",
+    "domain": "weibo.com",
+    "path": "/",
+    "expires": 1761224903.906652,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  }
+]
