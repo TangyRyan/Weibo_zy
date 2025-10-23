@@ -1,20 +1,2 @@
-# --- Runtime outputs (do not commit) ---
-# Playwright 持久化浏览器数据
-weibo_enhanced/browser_data/
-weibo_enhanced/browser_data/**
 weibo_enhanced/browser_data_detail/
 weibo_enhanced/browser_data_detail/**
-
-# 抓取产物
-weibo/api/
-weibo/api/**
-
-# 详情抓取产物
-weibo_enhanced/hot_posts_details/
-weibo_enhanced/hot_posts_details/**
-
-# 日志与归档
-logs/
-logs/**
-archives/
-archives/**
